@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
 
     zeroArray(SIZE, c);
     printDesc("naive scan, power-of-two");
-    StreamCompaction::Naive::scan(SIZE, c, a);
+    StreamCompaction::Naive::scanSharedMemory(SIZE, c, a);
     printElapsedTime(StreamCompaction::Naive::timer().getGpuElapsedTimeForPreviousOperation(), "(CUDA Measured)");
     //printArray(SIZE, c, true);
     printCmpResult(SIZE, b, c);
@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
 
     zeroArray(SIZE, c);
     printDesc("naive scan, non-power-of-two");
-    StreamCompaction::Naive::scan(NPOT, c, a);
+    StreamCompaction::Naive::scanSharedMemory(NPOT, c, a);
     printElapsedTime(StreamCompaction::Naive::timer().getGpuElapsedTimeForPreviousOperation(), "(CUDA Measured)");
     //printArray(SIZE, c, true);
     printCmpResult(NPOT, b, c);

@@ -29,6 +29,46 @@ namespace StreamCompaction {
             }
         }
 
+        __global__ void naiveScanSharedMem(int n, int* idata, int* odata) {
+            // BLOCKSIZE must be power of 2
+            // shared mem should have size threadsPerBlock * 2 * sizeof(int).
+            // s[0:blockDim.x] represents the ping array
+            // s[blockDim.x:2*blockDim.x] represents the pong array
+            extern __shared__ int s[];
+            
+            unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+            if (idx >= n) return;
+
+            // Load into shared mem
+            s[threadIdx.x] = idata[idx];
+            s[blockDim.x + threadIdx.x] = s[threadIdx.x];
+            __syncthreads();
+            for (unsigned stride = 1; stride < blockDim.x; stride *= 2) {
+                if (threadIdx.x + stride < blockDim.x) {
+                    s[blockDim.x + threadIdx.x + stride] += s[threadIdx.x];
+                }
+            __syncthreads();
+            s[threadIdx.x] = s[blockDim.x + threadIdx.x];
+            __syncthreads();
+            }
+            idata[idx] = s[threadIdx.x];
+            if (threadIdx.x == blockDim.x - 1) {
+                odata[blockIdx.x] = s[threadIdx.x];
+            }
+        }
+
+        __global__ void addPrefix(int n, int* idata, int* odata) {
+            unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+            
+            if (idx >= n) return;
+            // manual incl to excl scan conversion
+            int valueToAdd = 0;
+            if (blockIdx.x > 0) {
+                valueToAdd = idata[blockIdx.x - 1];
+            }
+            odata[idx] += valueToAdd;
+        }
+
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
@@ -71,6 +111,71 @@ namespace StreamCompaction {
             cudaFree(d_ping);
             cudaFree(d_pong);
             timer().endGpuTimer();
+        }
+
+        void scanSharedMemory(int n, int* odata, const int* idata) {
+            timer().startGpuTimer();
+
+            unsigned blocksize = 128;
+
+            // n rounded up to the nearest power of two
+            //int roundUpN = ilog2ceil(n);
+            //int totalN = pow(2, roundUpN);
+
+            // We will just use one buffer, each cycle the number of elements we process
+            // is divided by blocksize.
+            int* d_data;
+
+            int roundArraySize = n;
+            int sum = n;
+            int* breakpoints = new int[20]; //TODO find through log
+            breakpoints[0] = 0;
+            breakpoints[1] = sum;
+            int breakpointsSize = 2;
+            printf("Breakpoints: 0, %i,", sum);
+            while (roundArraySize > 1) {
+                roundArraySize = divup(roundArraySize, blocksize);
+                sum += roundArraySize;
+                breakpoints[breakpointsSize] = sum;
+                breakpointsSize++;
+                printf(" %i,", roundArraySize);
+            }
+            printf("\n");
+
+            cudaMalloc((void**)&d_data, sum * sizeof(int));
+            checkCUDAError("cudaMalloc d_data");
+
+            cudaMemset(d_data, 0, sum * sizeof(int));
+            checkCUDAError("cudaMemset d_data");
+            cudaMemcpy(d_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            checkCUDAError("cudaMemcpy initial data to d_data");
+
+            for (int i = 0; i < breakpointsSize - 1; ++i) {
+                printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
+                // interval is from breakpoints[i] to breakpoints[i+1]
+                naiveScanSharedMem<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 20 * sizeof(int)>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i], d_data + breakpoints[i + 1]);
+                checkCUDAError("naiveScanSharedMem");
+            }
+            for (int i = breakpointsSize - 2; i >= 0; --i) {
+                printf("Interval2 is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
+                // interval is from breakpoints[i] to breakpoints[i+1]
+
+                // we will do manual incl scan to excl can conversion in following kernel.
+                addPrefix<<<divup(breakpoints[i + 1] - breakpoints[i], blocksize), blocksize>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i + 1], d_data + breakpoints[i]);
+                checkCUDAError("addPrefix");
+            }
+
+            odata[0] = 0;
+            cudaMemcpy(odata + 1, d_data, (n - 1) * sizeof(int), cudaMemcpyDeviceToHost);
+            checkCUDAError("cudaMemcpy output data from d_data");
+            cudaFree(d_data);
+
+
+
+            timer().endGpuTimer();
+            delete[] breakpoints;
         }
     }
 }
