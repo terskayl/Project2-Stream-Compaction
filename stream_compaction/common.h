@@ -30,6 +30,10 @@ inline int ilog2ceil(int x) {
     return x == 1 ? 0 : ilog2(x - 1) + 1;
 }
 
+inline int divup(int n, int divisor) {
+    return (n + divisor - 1) / divisor;
+}
+
 namespace StreamCompaction {
     namespace Common {
         __global__ void kernMapToBoolean(int n, int *bools, const int *idata);
@@ -79,6 +83,11 @@ namespace StreamCompaction {
                 cpu_timer_started = false;
             }
 
+            bool isStartedCpu()
+            {
+                return cpu_timer_started;
+            }
+
             void startGpuTimer()
             {
                 if (gpu_timer_started) { throw std::runtime_error("GPU timer already started"); }
@@ -96,6 +105,11 @@ namespace StreamCompaction {
 
                 cudaEventElapsedTime(&prev_elapsed_time_gpu_milliseconds, event_start, event_end);
                 gpu_timer_started = false;
+            }
+
+            bool isStartedGpu()
+            {
+                return gpu_timer_started;
             }
 
             float getCpuElapsedTimeForPreviousOperation() //noexcept //(damn I need VS 2015

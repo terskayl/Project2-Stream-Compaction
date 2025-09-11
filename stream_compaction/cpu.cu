@@ -18,9 +18,24 @@ namespace StreamCompaction {
          * (Optional) For better understanding before starting moving to GPU, you can simulate your GPU scan in this function first.
          */
         void scan(int n, int *odata, const int *idata) {
-            timer().startCpuTimer();
-            // TODO
-            timer().endCpuTimer();
+            bool timed = false;
+            if (!timer().isStartedCpu()) {
+                timer().startCpuTimer();
+                timed = true;
+            }
+            
+            int sum = 0;
+            for (int i = 0; i < n; ++i) {
+                // We set out data first in order to do an exclusive scan. We
+                // can reverse the next two lines in order to perform an 
+                // inclusive scan.
+                odata[i] = sum;
+                sum += idata[i];
+            }
+
+            if (timed) {
+                timer().endCpuTimer();
+            }
         }
 
         /**
@@ -30,9 +45,18 @@ namespace StreamCompaction {
          */
         int compactWithoutScan(int n, int *odata, const int *idata) {
             timer().startCpuTimer();
-            // TODO
+            
+            int outIndex = 0;
+            for (int i = 0; i < n; ++i) {
+                int data = idata[i];
+                if (data != 0) {
+                    odata[outIndex] = data;
+                    outIndex += 1;
+                }
+            }
+
             timer().endCpuTimer();
-            return -1;
+            return outIndex;
         }
 
         /**
@@ -42,9 +66,35 @@ namespace StreamCompaction {
          */
         int compactWithScan(int n, int *odata, const int *idata) {
             timer().startCpuTimer();
-            // TODO
+            
+            // Is valid arr is an array the same size of our data that is 
+            // 0 if the data is invalid and 1 if it is valid
+            int* isValidArr = new int[n];
+            for (int i = 0; i < n; ++i) {
+                if (idata[i] == 0) {
+                    isValidArr[i] = 0;
+                } else {
+                    isValidArr[i] = 1;
+                }
+            }
+
+            // indicesArray will tell us, for all non-zero entries, which
+            // index they will be in our output array.
+            int* indicesArray = new int[n];
+            scan(n, indicesArray, isValidArr);
+
+            for (int i = 0; i < n; ++i) {
+                if (idata[i] != 0) {
+                    odata[indicesArray[i]] = idata[i];
+                }
+            }
+
+            int finalCount = indicesArray[n - 1] + (idata[n - 1] == 0 ? 0 : 1);
+            delete[] isValidArr;
+            delete[] indicesArray;
+
             timer().endCpuTimer();
-            return -1;
+            return finalCount;
         }
     }
 }
