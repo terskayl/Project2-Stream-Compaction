@@ -59,7 +59,6 @@ namespace StreamCompaction {
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
         void scan(int n, int *odata, const int *idata) {
-            timer().startGpuTimer();
             unsigned blocksize = 128;
 
             // n rounded up to the nearest power of two
@@ -75,22 +74,23 @@ namespace StreamCompaction {
             cudaMemcpy(d_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAError("cudaMemcpy initial data to d_data");
 
+            timer().startGpuTimer();
             // Up-Sweep
-            for (int exp = 1; exp <= totalN; ++exp) {
+            for (int exp = 1; exp <= roundUpN; ++exp) {
                 kernUpsweepStep<<<divup(totalN, blocksize), blocksize>>>(totalN, exp, d_data);
             }
             cudaDeviceSynchronize();
             // Down-Sweep
             cudaMemset(d_data + (totalN - 1), 0, 1 * sizeof(int));
-            for (int exp = totalN; exp >= 1; --exp) {
+            for (int exp = roundUpN; exp >= 1; --exp) {
                 kernDownsweepStep<<<divup(totalN, blocksize), blocksize>>>(totalN, exp, d_data);
             }
+            timer().endGpuTimer();
 
             cudaMemcpy(odata, d_data, n * sizeof(int), cudaMemcpyDeviceToHost);
             checkCUDAError("cudaMemcpy output data from d_data");
             cudaFree(d_data);
 
-            timer().endGpuTimer();
         }
 
         /**
@@ -103,7 +103,6 @@ namespace StreamCompaction {
          * @returns      The number of elements remaining after compaction.
          */
         int compact(int n, int *odata, const int *idata) {
-            timer().startGpuTimer();
             unsigned blocksize = 128;
 
             // n rounded up to the nearest power of two
@@ -125,17 +124,18 @@ namespace StreamCompaction {
             cudaMemcpy(d_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAError("cudaMemcpy idata into d_data");
 
+            timer().startGpuTimer();
             Common::kernMapToBoolean<<<divup(totalN, blocksize), blocksize>>>(totalN, d_bools, d_data);
             checkCUDAError("kernMapToBoolean");
             cudaDeviceSynchronize();
             // Up-Sweep
-            for (int exp = 1; exp <= totalN; ++exp) {
+            for (int exp = 1; exp <= roundUpN; ++exp) {
                 kernUpsweepStep << <divup(totalN, blocksize), blocksize >> > (totalN, exp, d_bools);
             }
             cudaDeviceSynchronize();
             // Down-Sweep
             cudaMemset(d_bools + (totalN - 1), 0, 1 * sizeof(int));
-            for (int exp = totalN; exp >= 1; --exp) {
+            for (int exp = roundUpN; exp >= 1; --exp) {
                 kernDownsweepStep<<<divup(totalN, blocksize), blocksize>>>(totalN, exp, d_bools);
             }
             checkCUDAError("upsweep and downsweep scan");
@@ -149,6 +149,8 @@ namespace StreamCompaction {
 
             Common::kernScatter<<<divup(totalN, blocksize), blocksize>>>(totalN, d_output, d_data, d_data, d_bools);
             checkCUDAError("kernScatter");
+            timer().endGpuTimer();
+
             cudaMemcpy(odata, d_output, std::min(sizePlusMaybeOne, n) * sizeof(int), cudaMemcpyDeviceToHost);
             checkCUDAError("cudaMemcpy to output");
 
@@ -163,7 +165,6 @@ namespace StreamCompaction {
             checkCUDAError("cudaFree");
 
 
-            timer().endGpuTimer();
             return sizePlusMaybeOne;
         }
     }

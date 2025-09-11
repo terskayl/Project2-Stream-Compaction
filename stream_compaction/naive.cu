@@ -73,7 +73,6 @@ namespace StreamCompaction {
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
         void scan(int n, int *odata, const int *idata) {
-            timer().startGpuTimer();
             
             unsigned blocksize = 128;
 
@@ -94,6 +93,7 @@ namespace StreamCompaction {
 
             cudaMemcpy(d_pong, d_ping, totalN * sizeof(int), cudaMemcpyDeviceToDevice);
 
+            timer().startGpuTimer();
             for (int i = 0; i < roundUpN; ++i) {
 
                 addStride<<<divup(totalN, blocksize), blocksize>>>(n, pow(2, i), d_ping, d_pong);
@@ -105,18 +105,17 @@ namespace StreamCompaction {
             }
 
             inclScanToExclScan<<<divup(totalN, blocksize), blocksize>>>(n, d_ping, d_pong);
+            timer().endGpuTimer();
 
             cudaMemcpy(odata, d_pong, n * sizeof(int), cudaMemcpyDeviceToHost);
             checkCUDAError("cudaMemcpy output data from pong");
             cudaFree(d_ping);
             cudaFree(d_pong);
-            timer().endGpuTimer();
         }
 
         void scanSharedMemory(int n, int* odata, const int* idata) {
-            timer().startGpuTimer();
 
-            unsigned blocksize = 128;
+            unsigned blocksize = 512;
 
             // n rounded up to the nearest power of two
             //int roundUpN = ilog2ceil(n);
@@ -150,6 +149,7 @@ namespace StreamCompaction {
             cudaMemcpy(d_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAError("cudaMemcpy initial data to d_data");
 
+            timer().startGpuTimer();
             for (int i = 0; i < breakpointsSize - 1; ++i) {
                 printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
@@ -161,11 +161,12 @@ namespace StreamCompaction {
                 printf("Interval2 is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
 
-                // we will do manual incl scan to excl can conversion in following kernel.
+                // we will do manual incl scan to excl scan conversion in following kernel.
                 addPrefix<<<divup(breakpoints[i + 1] - breakpoints[i], blocksize), blocksize>>>
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i + 1], d_data + breakpoints[i]);
                 checkCUDAError("addPrefix");
             }
+            timer().endGpuTimer();
 
             odata[0] = 0;
             cudaMemcpy(odata + 1, d_data, (n - 1) * sizeof(int), cudaMemcpyDeviceToHost);
@@ -174,7 +175,6 @@ namespace StreamCompaction {
 
 
 
-            timer().endGpuTimer();
             delete[] breakpoints;
         }
     }
