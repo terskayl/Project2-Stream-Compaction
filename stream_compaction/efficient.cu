@@ -32,7 +32,8 @@ namespace StreamCompaction {
             // on the right.
             idx += 1;
             unsigned lowerNeighbor = idx - (1 << (exp - 1));
-            if (idx <= n && lowerNeighbor >= 1 && idx % (1 << exp) == 0) {
+                                                     // idx % powf(2, exp)
+            if (idx <= n && lowerNeighbor >= 1 && (idx & (1 << exp) - 1) == 0) {
                 //data[idx - 1] += data[idx - (1 << (exp - 1)) - 1];
                 data[idx - 1] += data[lowerNeighbor - 1];
             }
@@ -53,6 +54,76 @@ namespace StreamCompaction {
                 data[idx - 1] += data[lowerNeighbor - 1];
                 data[lowerNeighbor - 1] = temp;
             }
+        }
+
+        __global__ void kernUpsweepBlock(int n, int* idata, int* odata) {
+            // BLOCKSIZE must be power of two
+            extern __shared__ int s[];
+
+            unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+            //if (idx >= n) return;
+
+            // If it is the last block, adjust its size accordingly.
+            unsigned effectiveSize = blockDim.x;
+
+            // load into shared memory
+            if (idx < n) {
+                s[threadIdx.x] = idata[idx];
+            } else { // virtual padding
+                s[threadIdx.x] = 0;
+            }
+            __syncthreads();
+
+            // For implementation purposes, we will mirror the implementation
+            // compared to the stepped methods so the biggest numbers will end
+            // at the 0th index.
+            for (int c = 2; c <= effectiveSize; c *= 2) {
+                if (c * threadIdx.x + c / 2 < effectiveSize) {
+                    s[c * threadIdx.x] += s[c * threadIdx.x + (c / 2)];
+                }
+                __syncthreads();
+            }
+            if (idx < n) idata[idx] = s[threadIdx.x];
+            if (threadIdx.x == 0) {
+                odata[blockIdx.x] = s[threadIdx.x];
+            }
+        }
+
+        __global__ void kernDownsweepBlock(int n, int* idata, int* odata) {
+            // BLOCKSIZE must be power of two
+            extern __shared__ int s[];
+
+            unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+            // recover the downsweep result for this block from the recursive
+            // layer above, remember, we are writing in reverse!
+            if (threadIdx.x == 0) {
+                //int totalBlocks = (n + blockDim.x - 1) / blockDim.x;
+                s[threadIdx.x] = idata[blockIdx.x];
+            // load into shared memory
+            } else if (idx < n) {
+                s[threadIdx.x] = odata[idx];
+            }
+            else { // virtual padding
+                s[threadIdx.x] = 0;
+            }
+            __syncthreads();
+
+            // The implementation is mirrored compared to downsweepStep
+            for (int c = blockDim.x; c >= 2; c /= 2) {
+                if (c * threadIdx.x + c / 2 < blockDim.x) {
+                    int temp = s[c * threadIdx.x];
+                    s[c * threadIdx.x] += s[c * threadIdx.x + (c / 2)];
+                    s[c * threadIdx.x + (c / 2)] = temp;
+                }
+                __syncthreads();
+            }
+            if (idx < n) odata[idx] = s[threadIdx.x];
+        }
+
+        __global__ void kernReverse(int n, int* idata, int* odata) {
+            unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+            if (idx < n) odata[idx] = idata[n - idx - 1];
         }
 
         /**
@@ -93,6 +164,90 @@ namespace StreamCompaction {
 
         }
 
+
+        void scanSharedMemory(int n, int* odata, const int* idata) {
+            unsigned blocksize = 128;
+            // We will just use one buffer, each cycle the number of 
+            // elements we process is divided by blocksize.
+
+            int roundArraySize = n;
+            int sum = n;
+            int* breakpoints = new int[20]; //TODO find through log
+            breakpoints[0] = 0;
+            breakpoints[1] = sum;
+            int breakpointsSize = 2;
+            printf("Breakpoints: 0, %i,", sum);
+            while (roundArraySize > 1) {
+                roundArraySize = divup(roundArraySize, blocksize);
+                sum += roundArraySize;
+                breakpoints[breakpointsSize] = sum;
+                breakpointsSize++;
+                printf(" %i,", roundArraySize);
+            }
+            printf("\n");
+
+
+            int *d_data, *d_dataUnreversed;
+            cudaMalloc((void**)&d_dataUnreversed, n * sizeof(int));
+            checkCUDAError("cudaMalloc d_dataUnreversed");
+            cudaMalloc((void**)&d_data, sum * sizeof(int));
+            checkCUDAError("cudaMalloc d_data");
+
+            cudaMemset(d_data, 0, sum * sizeof(int));
+            checkCUDAError("cudaMemset d_data");
+            
+            cudaMemcpy(d_dataUnreversed, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            checkCUDAError("cudaMemcpy initial data to d_dataUnreversed");
+
+            timer().startGpuTimer();
+
+            kernReverse<<<divup(n, blocksize), blocksize>>>(n, d_dataUnreversed, d_data);
+            cudaDeviceSynchronize();
+            int* out = new int[sum];
+            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
+            printArray(n, out, false);
+            checkCUDAError("kernReverse");
+
+            for (int i = 0; i < breakpointsSize - 1; ++i) {
+                printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
+                // interval is from breakpoints[i] to breakpoints[i+1]
+                kernUpsweepBlock<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 1 * sizeof(int)>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i], d_data + breakpoints[i + 1]);
+                checkCUDAError("naiveScanSharedMem");
+                cudaDeviceSynchronize();
+
+            }
+            
+            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
+            printArray(sum, out, false);
+
+            cudaMemset(d_data + sum - 1, 0, 1 * sizeof(int));
+            for (int i = breakpointsSize - 3; i >= 0; --i) {
+                printf("Interval2 is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
+                // interval is from breakpoints[i] to breakpoints[i+1]
+
+                kernDownsweepBlock<<<divup(breakpoints[i + 1] - breakpoints[i], blocksize), blocksize>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i + 1], d_data + breakpoints[i]);
+                checkCUDAError("addPrefix");
+            }
+
+
+            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
+            printArray(sum, out, false);
+            delete[] out;
+
+            timer().endGpuTimer();
+
+            kernReverse<<<divup(n, blocksize), blocksize>>>(n, d_data, d_dataUnreversed);
+            checkCUDAError("kernReverse");
+
+            cudaMemcpy(odata, d_dataUnreversed, n * sizeof(int), cudaMemcpyDeviceToHost);
+            checkCUDAError("cudaMemcpy output data from d_data");
+            cudaFree(d_data);
+            cudaFree(d_dataUnreversed);
+
+        }
+
         /**
          * Performs stream compaction on idata, storing the result into odata.
          * All zeroes are discarded.
@@ -130,7 +285,7 @@ namespace StreamCompaction {
             cudaDeviceSynchronize();
             // Up-Sweep
             for (int exp = 1; exp <= roundUpN; ++exp) {
-                kernUpsweepStep << <divup(totalN, blocksize), blocksize >> > (totalN, exp, d_bools);
+                kernUpsweepStep<<<divup(totalN, blocksize), blocksize>>>(totalN, exp, d_bools);
             }
             cudaDeviceSynchronize();
             // Down-Sweep

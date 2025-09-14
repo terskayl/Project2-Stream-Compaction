@@ -117,10 +117,6 @@ namespace StreamCompaction {
 
             unsigned blocksize = 512;
 
-            // n rounded up to the nearest power of two
-            //int roundUpN = ilog2ceil(n);
-            //int totalN = pow(2, roundUpN);
-
             // We will just use one buffer, each cycle the number of elements we process
             // is divided by blocksize.
             int* d_data;
@@ -153,7 +149,7 @@ namespace StreamCompaction {
             for (int i = 0; i < breakpointsSize - 1; ++i) {
                 printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
-                naiveScanSharedMem<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 20 * sizeof(int)>>>
+                naiveScanSharedMem<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 2 * sizeof(int)>>>
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i], d_data + breakpoints[i + 1]);
                 checkCUDAError("naiveScanSharedMem");
             }
