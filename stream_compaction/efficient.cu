@@ -176,15 +176,12 @@ namespace StreamCompaction {
             breakpoints[0] = 0;
             breakpoints[1] = sum;
             int breakpointsSize = 2;
-            printf("Breakpoints: 0, %i,", sum);
             while (roundArraySize > 1) {
                 roundArraySize = divup(roundArraySize, blocksize);
                 sum += roundArraySize;
                 breakpoints[breakpointsSize] = sum;
                 breakpointsSize++;
-                printf(" %i,", roundArraySize);
             }
-            printf("\n");
 
 
             int *d_data, *d_dataUnreversed;
@@ -203,13 +200,9 @@ namespace StreamCompaction {
 
             kernReverse<<<divup(n, blocksize), blocksize>>>(n, d_dataUnreversed, d_data);
             cudaDeviceSynchronize();
-            int* out = new int[sum];
-            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
-            printArray(n, out, false);
             checkCUDAError("kernReverse");
 
             for (int i = 0; i < breakpointsSize - 1; ++i) {
-                printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
                 kernUpsweepBlock<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 1 * sizeof(int)>>>
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i], d_data + breakpoints[i + 1]);
@@ -217,10 +210,6 @@ namespace StreamCompaction {
                 cudaDeviceSynchronize();
 
             }
-            
-            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
-            printArray(sum, out, false);
-
             cudaMemset(d_data + sum - 1, 0, 1 * sizeof(int));
             for (int i = breakpointsSize - 3; i >= 0; --i) {
                 printf("Interval2 is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
@@ -230,11 +219,6 @@ namespace StreamCompaction {
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i + 1], d_data + breakpoints[i]);
                 checkCUDAError("addPrefix");
             }
-
-
-            cudaMemcpy(out, d_data, sum * sizeof(int), cudaMemcpyDeviceToHost);
-            printArray(sum, out, false);
-            delete[] out;
 
             timer().endGpuTimer();
 

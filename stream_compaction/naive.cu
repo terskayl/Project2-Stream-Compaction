@@ -127,15 +127,12 @@ namespace StreamCompaction {
             breakpoints[0] = 0;
             breakpoints[1] = sum;
             int breakpointsSize = 2;
-            printf("Breakpoints: 0, %i,", sum);
             while (roundArraySize > 1) {
                 roundArraySize = divup(roundArraySize, blocksize);
                 sum += roundArraySize;
                 breakpoints[breakpointsSize] = sum;
                 breakpointsSize++;
-                printf(" %i,", roundArraySize);
             }
-            printf("\n");
 
             cudaMalloc((void**)&d_data, sum * sizeof(int));
             checkCUDAError("cudaMalloc d_data");
@@ -147,14 +144,12 @@ namespace StreamCompaction {
 
             timer().startGpuTimer();
             for (int i = 0; i < breakpointsSize - 1; ++i) {
-                printf("Interval is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
                 naiveScanSharedMem<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 2 * sizeof(int)>>>
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i], d_data + breakpoints[i + 1]);
                 checkCUDAError("naiveScanSharedMem");
             }
             for (int i = breakpointsSize - 2; i >= 0; --i) {
-                printf("Interval2 is %i to %i\n", breakpoints[i], breakpoints[i + 1]);
                 // interval is from breakpoints[i] to breakpoints[i+1]
 
                 // we will do manual incl scan to excl scan conversion in following kernel.
