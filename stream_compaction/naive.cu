@@ -123,7 +123,8 @@ namespace StreamCompaction {
 
             int roundArraySize = n;
             int sum = n;
-            int* breakpoints = new int[20]; //TODO find through log
+                                            // ceiling(log_blocksize(n)) via change of bases
+            int* breakpoints = new int[2 + (ilog2(n - 1) / ilog2(blocksize)) + 1];
             breakpoints[0] = 0;
             breakpoints[1] = sum;
             int breakpointsSize = 2;
@@ -152,7 +153,7 @@ namespace StreamCompaction {
             for (int i = breakpointsSize - 2; i >= 0; --i) {
                 // interval is from breakpoints[i] to breakpoints[i+1]
 
-                // we will do manual incl scan to excl scan conversion in following kernel.
+                // We will do manual incl scan to excl scan conversion in following kernel.
                 addPrefix<<<divup(breakpoints[i + 1] - breakpoints[i], blocksize), blocksize>>>
                     (breakpoints[i + 1] - breakpoints[i], d_data + breakpoints[i + 1], d_data + breakpoints[i]);
                 checkCUDAError("addPrefix");
