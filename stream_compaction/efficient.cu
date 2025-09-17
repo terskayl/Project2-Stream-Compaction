@@ -5,12 +5,7 @@
 
 namespace StreamCompaction {
     namespace Efficient {
-        using StreamCompaction::Common::PerformanceTimer;
-        PerformanceTimer& timer()
-        {
-            static PerformanceTimer timer;
-            return timer;
-        }
+
         void printArray(int n, int* a, bool abridged = false) {
             printf("    [ ");
             for (int i = 0; i < n; i++) {
@@ -21,6 +16,12 @@ namespace StreamCompaction {
                 printf("%3d ", a[i]);
             }
             printf("]\n");
+        }
+        using StreamCompaction::Common::PerformanceTimer;
+        PerformanceTimer& timer()
+        {
+            static PerformanceTimer timer;
+            return timer;
         }
         __global__ void kernUpsweepStep(int n, int exp, int* data) {
             unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -126,7 +127,7 @@ namespace StreamCompaction {
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
         void scan(int n, int *odata, const int *idata) {
-            unsigned blocksize = 128;
+            unsigned blocksize = 512;
 
             // n rounded up to the nearest power of two
             int roundUpN = ilog2ceil(n);
@@ -164,7 +165,7 @@ namespace StreamCompaction {
 
 
         void scanSharedMemory(int n, int* odata, const int* idata) {
-            unsigned blocksize = 128;
+            unsigned blocksize = 512;
             // We will just use one buffer, each cycle the number of 
             // elements we process is divided by blocksize.
 
@@ -274,7 +275,6 @@ namespace StreamCompaction {
             int sizePlusMaybeOne;
             cudaMemcpy(&sizePlusMaybeOne, d_bools + (totalN - 1), 1 * sizeof(int), cudaMemcpyDeviceToHost);
             checkCUDAError("cudaMemcpy sizePlusMaybeOne");
-            printf("%i", sizePlusMaybeOne);
 
             cudaMemset(d_output, 0, totalN * sizeof(int));
             checkCUDAError("cudaMemset d_output");
@@ -298,6 +298,96 @@ namespace StreamCompaction {
 
 
             return sizePlusMaybeOne;
+        }
+
+        /**
+         * Performs stream compaction on idata, storing the result into odata.
+         * All zeroes are discarded.
+         *
+         * @param n      The number of elements in idata.
+         * @param odata  The array into which to store elements.
+         * @param idata  The array of elements to compact.
+         * @returns      The number of elements remaining after compaction.
+         */
+        int compactSharedMemory(int n, int* odata, const int* idata) {
+            unsigned blocksize = 128;
+
+            int roundArraySize = n;
+            int sum = n;
+            // ceiling(ilog_blocksize(n)) via change of bases
+            int* breakpoints = new int[2 + (ilog2(n - 1) / ilog2(blocksize)) + 1];
+            breakpoints[0] = 0;
+            breakpoints[1] = sum;
+            int breakpointsSize = 2;
+            while (roundArraySize > 1) {
+                roundArraySize = divup(roundArraySize, blocksize);
+                sum += roundArraySize;
+                breakpoints[breakpointsSize] = sum;
+                breakpointsSize++;
+            }
+
+            // n rounded up to the nearest power of two
+            int roundUpN = ilog2ceil(n);
+            int totalN = pow(2, roundUpN);
+
+            int* d_data, * d_bools, * d_indices, * d_output;
+            cudaMalloc((void**)&d_data, totalN * sizeof(int));
+            checkCUDAError("cudaMalloc d_data");
+            cudaMalloc((void**)&d_bools, sum * sizeof(int));
+            checkCUDAError("cudaMalloc d_bools");
+            cudaMalloc((void**)&d_indices, totalN * sizeof(int));
+            checkCUDAError("cudaMalloc d_indices");
+            cudaMalloc((void**)&d_output, totalN * sizeof(int));
+            checkCUDAError("cudaMalloc d_output");
+
+            cudaMemset(d_bools, 0, sum * sizeof(int));
+            checkCUDAError("cudaMemset d_bools");
+
+            cudaMemset(d_data, 0, n * sizeof(int));
+            checkCUDAError("cudaMemset d_data");
+            cudaMemcpy(d_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            checkCUDAError("cudaMemcpy idata into d_data");
+
+            timer().startGpuTimer();
+
+            Common::kernMapToBoolean<<<divup(totalN, blocksize), blocksize>>>(n, d_bools, d_data);
+            checkCUDAError("kernMapToBoolean");
+            cudaDeviceSynchronize();
+
+            for (int i = 0; i < breakpointsSize - 2; ++i) {
+                int padding = divup(breakpoints[i + 1] - breakpoints[i], blocksize) * blocksize - (breakpoints[i + 1] - breakpoints[i]);
+                kernUpsweepBlock<<<divup(breakpoints[i+1] - breakpoints[i], blocksize), blocksize, blocksize * 1 * sizeof(int)>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_bools + breakpoints[i], d_bools + breakpoints[i + 1], padding);
+                checkCUDAError("kernUpsweepBlock");
+                cudaDeviceSynchronize();
+            }
+
+            int total;
+            cudaMemcpy(&total, d_bools + sum - 1, 1 * sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemset(d_bools + sum - 1, 0, 1 * sizeof(int));
+            for (int i = breakpointsSize - 3; i >= 0; --i) {
+                // interval is from breakpoints[i] to breakpoints[i+1]
+                int padding = divup(breakpoints[i + 1] - breakpoints[i], blocksize) * blocksize - (breakpoints[i + 1] - breakpoints[i]);
+                kernDownsweepBlock<<<divup(breakpoints[i + 1] - breakpoints[i], blocksize), blocksize, blocksize * 1 * sizeof(int)>>>
+                    (breakpoints[i + 1] - breakpoints[i], d_bools + breakpoints[i + 1], d_bools + breakpoints[i], padding);
+                checkCUDAError("kernDownsweepBlock");
+                cudaDeviceSynchronize();
+            }
+
+            Common::kernScatter<<<divup(totalN, blocksize), blocksize>>>(n, d_output, d_data, d_data, d_bools);
+            checkCUDAError("kernScatter");
+            timer().endGpuTimer();
+
+            cudaMemcpy(odata, d_output, total * sizeof(int), cudaMemcpyDeviceToHost);
+            checkCUDAError("cudaMemcpy to output");
+
+            cudaFree(d_data);
+            cudaFree(d_bools);
+            cudaFree(d_indices);
+            cudaFree(d_output);
+            checkCUDAError("cudaFree");
+
+            return total;
         }
 
 

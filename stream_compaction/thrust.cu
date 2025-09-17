@@ -41,6 +41,9 @@ namespace StreamCompaction {
 
             cudaMemcpy(odata, d_odata, n * sizeof(int), cudaMemcpyDeviceToHost);
             checkCUDAError("cudaMemcpy d_odata into odata");
+
+            cudaFree(d_idata);
+            cudaFree(d_odata);
         }
     }
 }
