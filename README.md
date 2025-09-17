@@ -24,7 +24,7 @@ for i <- 1..arraySize
 ```
 This algorithm is strictly sequential, as each following iteration of the for loop is dependent on the previous iteration. This algorithm is therefore hard to parallelize and so becomes quite slow at large arrays. This scales at `O(n)`.
 ##### GPU Naive Scan
-We can observe that each array entry needs to have all the array indices before it added into its output entry. We can do this in parallel, meaning we can utilize the GPU. One way to ensure all numbers before an index is accounted for is to first add the index $2^0$ elements before it, then $2^1$, then $2^2$, until out of range. 
+We can observe that each array entry needs to have all the array indices before it is added into its output entry. We can do this in parallel, meaning we can utilize the GPU. One way to ensure all numbers before an index are accounted for is to first add the index $2^0$ elements before it, then $2^1$, then $2^2$, until out of range. 
 ```python
 # CPU 
 for stride <- 1...arraySize, stride *= 2:
@@ -76,7 +76,7 @@ Array Size | CPU|Naive| Efficient|Thurst
 134,217,728|87.8|360.8|101.5|11.1
 
 Since GPU algorithms often rely on our array size being a power of two, I have provided two graphs, a less dense graph of performance at power-of-two sizes, and a more dense graph of performance at non-power-of-two sizes.  
-Both the Naive and Work-Efficient algorithms are a disappointment, being slower than CPU. Work-Efficient comes close but Naive takes significantly more time then the CPU execution. One of the factors most slowing down these GPU algorithms is the high amount of global memory reads.
+Both the Naive and Work-Efficient algorithms are a disappointment, being slower than CPU. Work-Efficient comes close but Naive takes significantly more time than the CPU execution. One of the factors most slowing down these GPU algorithms is the high amount of global memory reads.
 
 ##### Naive Shared Memory Scan
 
@@ -104,7 +104,7 @@ for i <- 1..log_blocksize(n):
   # Kernel adding up the prefixes
   arr[i] += parent[blockId]
 ```
-Since we can process ten strides worth of adds in a kernel, rather than just one, this algorithm has up to 10 times less global memory reads!
+Since we can process ten strides' worth of adds in a kernel, rather than just one, this algorithm has up to 10 times less global memory reads!
 
 ##### Work-Efficient Shared Memory
 Similar to before, shared memory only persists within a block. We can account for this by outputing our values up into an array of size numBlocks when sweeping up, and when we downsweep we can start from there.
@@ -166,8 +166,10 @@ We now see that the shared memory implementations of these algorithms are much m
 Naive Shared-Mem is the fastest algorithm between array sizes of approximately 250k to 5 million, then Efficient Shared-Mem is the fastest between approximately 5 million to 50 million before being outclassed by Thrust.
 
 #### Compact
-This repo has implementations for compact both on the CPU and the GPU. There are two CPU implmentations, one sequential, and one mirroring the parallel workflow of the GPU's compact. The GPU implementations differ only by which scan they are using, with the regular GPU using the work-efficient, and the shared memory GPU strategy using the work-efficient shared-mem implmentation. We can see the shared memory GPU strategy outperforms the three others.
-![](img/6.png)
+This repo has implementations for compact both on the CPU and the GPU. There are two CPU implementations, one sequential, and one mirroring the parallel workflow of the GPU's compact. The GPU implementations differ only by which scan they are using, with the regular GPU using the work-efficient, and the shared memory GPU strategy using the work-efficient shared-mem implementation. We can see the shared memory GPU strategy outperforms the three others. 
+
+![](img/6.png)  
+
 *Figure 5: A graph plotting the runtime performance of various scan strategies vs array size. This graph is in log-log scale. Lower is better.*
 
 ### Performance Analysis
@@ -185,7 +187,7 @@ if (threadId & 1 << (stride - 1)) == 0:
 
 A final optimization done is the **divergent warp reduction**. At this level, we face a problem in that, when the stride is 4, every fourth thread activates and the other three threads are simply idling. This is an inefficient use of GPU resources as adjacent threads will run in the same warp. If all the threads in the warp, that is all the threads in a consecutive area were to all idle, the warp could quit early and free up that compute for more useful calculations.
 
-To have only consecutive threads perform our calculation, we can simple demand only the first $n/2^{\text{stride}}$ threads do work. Now the threads that will not do work are all consecutive, allowing those warps to return early.
+To have only consecutive threads perform our calculation, we can simply demand only the first $n/2^{\text{stride}}$ threads do work. Now the threads that will not do work are all consecutive, allowing those warps to return early.
 ```python
 if (stride * threadId < blocksize) {
   arr[stride * threadId + (stride / 2)] += arr[stride * threadId]
